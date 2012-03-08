@@ -27,6 +27,10 @@ From your eZ Publish doc root, execute:
 php bin/php/ezpgenerateautoloads.php -e
 ```
 
+## Configure your PostgreSQL database ##
+
+Either create a dedicated database, or use the existing eZ Publish DB. Import the SQL script that can be found in `sql/posgresql/cluster_dfs_schema.sql`.
+
 ## Enable and configure postgresql for DFS in file.ini ##
 
 Edit your `file.ini` override, usually  the global one, `settings/override/file.ini.append.php`. Either edit or add the following in this file:
