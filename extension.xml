@@ -11,7 +11,7 @@
             <requires>
                 <name>eZ Publish</name>
                 <version>4.7.0</version>
-            </uses>
+            </requires>
         </software>
     </metadata>
 </software>
