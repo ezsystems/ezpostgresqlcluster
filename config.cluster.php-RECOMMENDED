@@ -1,0 +1,10 @@
+<?php
+define( 'CLUSTER_STORAGE_GATEWAY_PATH', 'ezpostgresqlcluster/clustering/dfs/gateway.php' );
+define( 'CLUSTER_STORAGE_BACKEND',  'dfspostgresql'  );
+define( 'CLUSTER_STORAGE_HOST',     'databasehost' );
+define( 'CLUSTER_STORAGE_PORT',     5433 );
+define( 'CLUSTER_STORAGE_USER',     'databaseuser' );
+define( 'CLUSTER_STORAGE_PASS',     'databasepassword' );
+define( 'CLUSTER_STORAGE_DB',       'databasename' );
+define( 'CLUSTER_STORAGE_CHARSET',  'utf8' );
+define( 'CLUSTER_MOUNT_POINT_PATH', 'path/to/nfs/mount' );
