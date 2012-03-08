@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<software>
+    <metadata>
+        <name>eZ PostgreSQL Cluster</name>
+        <version>//autogentag//</version>
+        <copyright>Copyright (C) 1999-2010 eZ Systems AS</copyright>
+        <license>//EZP_LICENSE//</license>
+        <info_url>http://github.com/ezsystems/ezpostgresqlcluster</info_url>
+
+        <software>
+            <requires>
+                <name>eZ Publish</name>
+                <version>4.7.0</version>
+            </uses>
+        </software>
+    </metadata>
+
+    <dependencies>
+        <requires>
+            <extension name="ezjscore" />
+        </requires>
+    </dependencies>
+
+</software>
