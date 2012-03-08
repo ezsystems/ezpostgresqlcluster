@@ -14,11 +14,4 @@
             </uses>
         </software>
     </metadata>
-
-    <dependencies>
-        <requires>
-            <extension name="ezjscore" />
-        </requires>
-    </dependencies>
-
 </software>
