@@ -53,10 +53,16 @@ The first entry, `ClusteringSettings.FileHandler` sets eZDFS as the cluster hand
 
 ## Set the cluster gateway ##
 
-Edit / create the `config.cluster.php` file at the eZ Publish root. Add these lines to it:
+Copy the provided example file config.cluster.php-RECOMMENDED from the extension to the eZ Publish root:
+
+```
+cp extension/ezpostgresqlcluster/config.cluster.php-RECOMMENDED config.cluster.php
+```
+
+then edit the file to match your database and NFS configuration:
 
 ```php
-define( 'CLUSTER_STORAGE_GATEWAY_PATH', 'ezpostgresqlcluster/clustering/dfs/gateway.php' );
+define( 'CLUSTER_STORAGE_GATEWAY_PATH', 'extension/ezpostgresqlcluster/clustering/dfs/gateway.php' );
 
 define( 'CLUSTER_STORAGE_BACKEND',  'dfspostgresql'  );
 define( 'CLUSTER_STORAGE_HOST',     'localhost' );
@@ -68,7 +74,7 @@ define( 'CLUSTER_STORAGE_CHARSET',  'utf8' );
 define( 'CLUSTER_MOUNT_POINT_PATH', '/media/nfs' );
 ```
 
-The first liine sets the `CLUSTER_STORAGE_GATEWAY_PATH` constants, that provides the path to a custom gateway implementation file.
+The first liine sets the `CLUSTER_STORAGE_GATEWAY_PATH` constant that provides the path to a custom gateway implementation file.
 
 Extra documentation about these settings can be found in the online documentation.
 
