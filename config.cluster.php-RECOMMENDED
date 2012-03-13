@@ -1,5 +1,5 @@
 <?php
-define( 'CLUSTER_STORAGE_GATEWAY_PATH', 'ezpostgresqlcluster/clustering/dfs/gateway.php' );
+define( 'CLUSTER_STORAGE_GATEWAY_PATH', 'extension/ezpostgresqlcluster/clustering/dfs/gateway.php' );
 define( 'CLUSTER_STORAGE_BACKEND',  'dfspostgresql'  );
 define( 'CLUSTER_STORAGE_HOST',     'databasehost' );
 define( 'CLUSTER_STORAGE_PORT',     5433 );
