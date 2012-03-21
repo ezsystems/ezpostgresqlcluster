@@ -1697,11 +1697,10 @@ class eZDFSFileHandlerPostgresqlBackend
         {
             $query .= " LIMIT {$limit[1]} OFFSET {$limit[0]}";
         }
-        $res = $this->_query( $query, __METHOD__ );
+        $stmt = $this->_query( $query, __METHOD__ );
         $filePathList = array();
-        while ( $row = pg_fetch_row( $res ) )
+        while ( $row = $stmt->fetch( PDO::FETCH_NUM ) )
             $filePathList[] = $row[0];
-        pg_free_result( $res );
 
         return $filePathList;
     }
