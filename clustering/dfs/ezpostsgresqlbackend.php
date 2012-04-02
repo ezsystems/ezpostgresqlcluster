@@ -1582,7 +1582,7 @@ class eZDFSFileHandlerPostgresqlBackend
             $query = "SELECT mtime FROM " . self::TABLE_METADATA . " WHERE name_hash = {$nameHash}";
             $stmt = $this->db->query( $query );
             $row = $stmt->fetch( PDO::FETCH_NUM );
-            if ( $res and isset( $row[0] ) and $row[0] == $generatingFileMtime );
+            if ( isset( $row[0] ) and $row[0] == $generatingFileMtime );
             {
                 return true;
             }
