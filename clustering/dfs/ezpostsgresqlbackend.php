@@ -16,6 +16,59 @@ class eZDFSFileHandlerPostgresqlBackend
 {
 
     /**
+     * Wait for n microseconds until retry if copy fails, to avoid DFS overload.
+     */
+    const TIME_UNTIL_RETRY = 100;
+
+    /**
+     * Max number of times a dfs file is tried to be copied.
+     *
+     * @var int
+     */
+    protected $maxCopyTries;
+    
+    public function __construct()
+    {        
+        $this->eventHandler = ezpEvent::getInstance();
+        $fileINI = eZINI::instance( 'file.ini' );
+        $this->maxCopyTries = (int)$fileINI->variable( 'eZDFSClusteringSettings', 'MaxCopyRetries' );
+
+        if ( defined( 'CLUSTER_METADATA_TABLE_CACHE' ) )
+        {
+            $this->metaDataTableCache = CLUSTER_METADATA_TABLE_CACHE;
+        }
+        else if ( $fileINI->hasVariable( 'eZDFSClusteringSettings', 'MetaDataTableNameCache' ) )
+        {
+            $this->metaDataTableCache = $fileINI->variable( 'eZDFSClusteringSettings', 'MetaDataTableNameCache' );
+        }
+
+        $this->cacheDir = eZINI::instance( 'site.ini' )->variable( 'FileSettings', 'CacheDir' );
+        $this->storageDir = eZINI::instance( 'site.ini' )->variable( 'FileSettings', 'StorageDir' );
+    }
+    
+    /**
+     * Returns the database table name to use for the specified file.
+     *
+     * For files detected as cache files the cache table is returned, if not
+     * the generic table is returned.
+     *
+     * @param string $filePath
+     * @return string The database table name
+     */
+    protected function dbTable( $filePath )
+    {
+        if ( $this->metaDataTableCache == $this->metaDataTable )
+            return $this->metaDataTable;
+
+        if ( strpos( $filePath, $this->cacheDir ) !== false && strpos( $filePath, $this->storageDir ) === false )
+        {
+            return $this->metaDataTableCache;
+        }
+
+        return $this->metaDataTable;
+    }
+    
+    /**
      * Connects to the database.
      *
      * @return void
@@ -151,7 +204,7 @@ class eZDFSFileHandlerPostgresqlBackend
         $nameTrunk       = self::nameTrunk( $dstFilePath, $scope );
 
         // Copy file metadata.
-        if ( $this->_insertUpdate( self::TABLE_METADATA,
+        if ( $this->_insertUpdate( $this->dbTable( $dstFilePath ),
                                    array( 'datatype'=> $datatype,
                                           'name' => $dstFilePath,
                                           'name_trunk' => $nameTrunk,
@@ -192,7 +245,7 @@ class eZDFSFileHandlerPostgresqlBackend
             $fname .= "::_purge($filePath)";
         else
             $fname = "_purge($filePath)";
-        $sql = "DELETE FROM " . self::TABLE_METADATA . " WHERE name_hash=" . $this->_md5( $filePath );
+        $sql = "DELETE FROM " . $this->dbTable( $filePath ) . " WHERE name_hash=" . $this->_md5( $filePath );
         if ( $expiry !== false )
         {
             $sql .= " AND mtime<" . (int)$expiry;
@@ -253,7 +306,7 @@ class eZDFSFileHandlerPostgresqlBackend
         $this->_begin( $fname );
 
         // select query, in FOR UPDATE mode
-        $selectSQL = "SELECT name FROM " . self::TABLE_METADATA .
+        $selectSQL = "SELECT name FROM " . $this->dbTable( $like ) .
                      "{$where} {$sqlLimit} FOR UPDATE";
         if ( !$stmt = $this->_query( $selectSQL, $fname ) )
         {
@@ -277,8 +330,8 @@ class eZDFSFileHandlerPostgresqlBackend
         }
 
         // delete query
-        $deleteSQL = "DELETE FROM " . self::TABLE_METADATA . " " . "WHERE name_hash IN " .
-                     "(SELECT name_hash FROM ". self::TABLE_METADATA . " $where $sqlLimit)";
+        $deleteSQL = "DELETE FROM " . $this->dbTable( $like ) . " " . "WHERE name_hash IN " .
+                     "(SELECT name_hash FROM ". $this->dbTable( $like ) . " $where $sqlLimit)";
         if ( !$stmt = $this->_query( $deleteSQL, $fname ) )
         {
             $this->_rollback( $fname );
@@ -340,7 +393,7 @@ class eZDFSFileHandlerPostgresqlBackend
      **/
     protected function _deleteInner( $filePath, $fname )
     {
-        if ( !$this->_query( "UPDATE " . self::TABLE_METADATA . " SET mtime=-ABS(mtime), expired=1 WHERE name_hash=" . $this->_md5( $filePath ), $fname ) )
+        if ( !$this->_query( "UPDATE " . $this->dbTable( $filePath ) . " SET mtime=-ABS(mtime), expired=1 WHERE name_hash=" . $this->_md5( $filePath ), $fname ) )
             return $this->_fail( "Deleting file $filePath failed" );
         return true;
     }
@@ -378,7 +431,7 @@ class eZDFSFileHandlerPostgresqlBackend
      */
     private function _deleteByLikeInner( $like, $fname )
     {
-        $sql = "UPDATE " . self::TABLE_METADATA . " SET mtime=-ABS(mtime), expired=1\nWHERE name like ". $this->_quote( $like );
+        $sql = "UPDATE " . $this->dbTable( $like ) . " SET mtime=-ABS(mtime), expired=1\nWHERE name like ". $this->_quote( $like );
         if ( !$res = $this->_query( $sql, $fname ) )
         {
             return $this->_fail( "Failed to delete files by like: '$like'" );
@@ -414,7 +467,7 @@ class eZDFSFileHandlerPostgresqlBackend
      */
     public function _deleteByRegexInner( $regex, $fname )
     {
-        $sql = "UPDATE " . self::TABLE_METADATA . " SET mtime=-ABS(mtime), expired=1\nWHERE name REGEXP " . $this->_quote( $regex );
+        $sql = "UPDATE " . $this->dbTable( $regex ) . " SET mtime=-ABS(mtime), expired=1\nWHERE name REGEXP " . $this->_quote( $regex );
         if ( !$res = $this->_query( $sql, $fname ) )
         {
             return $this->_fail( "Failed to delete files by regex: '$regex'" );
@@ -461,7 +514,7 @@ class eZDFSFileHandlerPostgresqlBackend
                               array( '.', '.*', '(', ')', '|' ),
                               $regex );
 
-        $sql = "UPDATE " . self::TABLE_METADATA . " SET mtime=-ABS(mtime), expired=1\nWHERE name REGEXP '$regex'";
+        $sql = "UPDATE " . $this->dbTable( $wildcard ) . " SET mtime=-ABS(mtime), expired=1\nWHERE name REGEXP '$regex'";
         if ( !$res = $this->_query( $sql, $fname ) )
         {
             return $this->_fail( "Failed to delete files by wildcard: '$wildcard'" );
@@ -491,7 +544,7 @@ class eZDFSFileHandlerPostgresqlBackend
             {
                 $where = "WHERE name LIKE '$commonPath/$dirItem/$commonSuffix%'";
             }
-            $sql = "UPDATE " . self::TABLE_METADATA . " SET mtime=-ABS(mtime), expired=1\n$where";
+            $sql = "UPDATE " . $this->dbTable( $commonPath ) . " SET mtime=-ABS(mtime), expired=1\n$where";
             if ( !$stmt = $this->_query( $sql, $fname ) )
             {
                 eZDebug::writeError( "Failed to delete files in dir: '$commonPath/$dirItem/$commonSuffix%'", __METHOD__ );
@@ -500,13 +553,13 @@ class eZDFSFileHandlerPostgresqlBackend
         return true;
     }
 
-    public function _exists( $filePath, $fname = false, $ignoreExpiredFiles = true )
+    public function _exists( $filePath, $fname = false, $ignoreExpiredFiles = true, $checkOnDFS = false )
     {
         if ( $fname )
             $fname .= "::_exists($filePath)";
         else
             $fname = "_exists($filePath)";
-        $row = $this->_selectOneRow( "SELECT name, mtime FROM " . self::TABLE_METADATA . " WHERE name_hash=" . $this->_md5( $filePath ),
+        $row = $this->_selectOneRow( "SELECT name, mtime FROM " . $this->dbTable( $filePath ) . " WHERE name_hash=" . $this->_md5( $filePath ),
                                      $fname, "Failed to check file '$filePath' existance: ", true );
         if ( $row === false )
             return false;
@@ -516,6 +569,11 @@ class eZDFSFileHandlerPostgresqlBackend
         else
             $rc = true;
 
+        if ( $checkOnDFS && $rc )
+        {
+            $rc = $this->dfsbackend->existsOnDFS( $filePath );
+        }
+        
         return $rc;
     }
 
@@ -639,7 +697,7 @@ class eZDFSFileHandlerPostgresqlBackend
             $fname .= "::_fetchMetadata($filePath)";
         else
             $fname = "_fetchMetadata($filePath)";
-        $sql = "SELECT * FROM " . self::TABLE_METADATA . " WHERE name_hash=" . $this->_md5( $filePath );
+        $sql = "SELECT * FROM " . $this->dbTable( $filePath ) . " WHERE name_hash=" . $this->_md5( $filePath );
         return $this->_selectOneAssoc( $sql, $fname,
                                        "Failed to retrieve file metadata: $filePath",
                                        true );
@@ -703,7 +761,7 @@ class eZDFSFileHandlerPostgresqlBackend
         $dstNameTrunkStr = $this->_quote( self::nameTrunk( $dstFilePath, $metaData['scope'] ) );
 
         // Mark entry for update to lock it
-        $sql = "SELECT * FROM " . self::TABLE_METADATA . " WHERE name_hash=MD5($srcFilePathStr) FOR UPDATE";
+        $sql = "SELECT * FROM " . $this->dbTable( $srcFilePath ) . " WHERE name_hash=MD5($srcFilePathStr) FOR UPDATE";
         if ( !$this->_query( $sql, "_rename($srcFilePath, $dstFilePath)" ) )
         {
             // @todo Throw an exception
@@ -716,10 +774,10 @@ class eZDFSFileHandlerPostgresqlBackend
             $this->_purge( $dstFilePath, false );
 
         // Create a new meta-data entry for the new file to make foreign keys happy.
-        $sql = "INSERT INTO " . self::TABLE_METADATA . " ".
+        $sql = "INSERT INTO " . $this->dbTable( $srcFilePath ) . " ".
                "(name, name_trunk, name_hash, datatype, scope, size, mtime, expired) " .
                "SELECT $dstFilePathStr AS name, $dstNameTrunkStr as name_trunk, MD5( $dstFilePathStr ) AS name_hash, " .
-               "datatype, scope, size, mtime, expired FROM " . self::TABLE_METADATA . " " .
+               "datatype, scope, size, mtime, expired FROM " . $this->dbTable( $srcFilePath ) . " " .
                "WHERE name_hash=MD5($srcFilePathStr)";
         if ( !$this->_query( $sql, "_rename($srcFilePath, $dstFilePath)" ) )
         {
@@ -735,7 +793,7 @@ class eZDFSFileHandlerPostgresqlBackend
         }
 
         // Remove old entry
-        $sql = "DELETE FROM " . self::TABLE_METADATA . " WHERE name_hash=MD5($srcFilePathStr)";
+        $sql = "DELETE FROM " . $this->dbTable( $srcFilePath ) . " WHERE name_hash=MD5($srcFilePathStr)";
         if ( !$this->_query( $sql, "_rename($srcFilePath, $dstFilePath)" ) )
         {
             eZDebug::writeError( "Failed removing old file '$srcFilePath'", __METHOD__ );
@@ -774,8 +832,9 @@ class eZDFSFileHandlerPostgresqlBackend
         else
             $fname = "_store($filePath, $datatype, $scope)";
 
-        $this->_protect( array( $this, '_storeInner' ), $fname,
+        $return = $this->_protect( array( $this, '_storeInner' ), $fname,
                          $filePath, $datatype, $scope, $fname );
+        return $return;
     }
 
     /**
@@ -796,7 +855,7 @@ class eZDFSFileHandlerPostgresqlBackend
         $filePathHash = md5( $filePath );
         $nameTrunk = self::nameTrunk( $filePath, $scope );
 
-        if ( $this->_insertUpdate( self::TABLE_METADATA,
+        if ( $this->_insertUpdate( $this->dbTable( $filePath ),
             array( 'datatype' => $datatype,
                    'name' => $filePath,
                    'name_trunk' => $nameTrunk,
@@ -838,7 +897,7 @@ class eZDFSFileHandlerPostgresqlBackend
         else
             $fname = "_storeContents($filePath, ..., $scope, $datatype)";
 
-        $this->_protect( array( $this, '_storeContentsInner' ), $fname,
+        return $this->_protect( array( $this, '_storeContentsInner' ), $fname,
                          $filePath, $contents, $scope, $datatype, $mtime, $fname );
     }
 
@@ -854,7 +913,7 @@ class eZDFSFileHandlerPostgresqlBackend
 
         // Copy file metadata.
         $result = $this->_insertUpdate(
-            self::TABLE_METADATA,
+            $this->dbTable( $filePath ),
             array( 'datatype'   => $datatype,
                    'name'       => $filePath,
                    'name_trunk' => $nameTrunk,
@@ -881,29 +940,35 @@ class eZDFSFileHandlerPostgresqlBackend
 
     public function _getFileList( $scopes = false, $excludeScopes = false )
     {
-        $query = 'SELECT name FROM ' . self::TABLE_METADATA;
-
-        if ( is_array( $scopes ) && count( $scopes ) > 0 )
-        {
-            $query .= ' WHERE scope ';
-            if ( $excludeScopes )
-                $query .= 'NOT ';
-            $query .= "IN ('" . implode( "', '", $scopes ) . "')";
-        }
-
-        $stmt = $this->_query( $query, "_getFileList( array( " . implode( ', ', $scopes ) . " ), $excludeScopes )" );
-        if ( !$stmt )
-        {
-            eZDebug::writeDebug( 'Unable to get file list', __METHOD__ );
-            // @todo Throw an exception
-            return false;
-        }
-
         $filePathList = array();
-        while ( $row = $stmt->fetch( PDO::FETCH_NUM ) )
-            $filePathList[] = $row[0];
-
-        unset( $stmt );
+        $tables = array_unique( array( $this->metaDataTable, $this->metaDataTableCache ) );
+        
+        foreach ( $tables as $table )
+        {
+            $query = 'SELECT name FROM ' . $table;
+    
+            if ( is_array( $scopes ) && count( $scopes ) > 0 )
+            {
+                $query .= ' WHERE scope ';
+                if ( $excludeScopes )
+                    $query .= 'NOT ';
+                $query .= "IN ('" . implode( "', '", $scopes ) . "')";
+            }
+    
+            $stmt = $this->_query( $query, "_getFileList( array( " . implode( ', ', $scopes ) . " ), $excludeScopes )" );
+            if ( !$stmt )
+            {
+                eZDebug::writeDebug( 'Unable to get file list', __METHOD__ );
+                // @todo Throw an exception
+                return false;
+            }
+    
+            $filePathList = array();
+            while ( $row = $stmt->fetch( PDO::FETCH_NUM ) )
+                $filePathList[] = $row[0];
+    
+            unset( $stmt );
+        }
         return $filePathList;
     }
 
@@ -1403,7 +1468,7 @@ class eZDFSFileHandlerPostgresqlBackend
                              'datatype' => "''",
                              'mtime' => $this->_quote( $mtime ),
                              'expired' => 0 );
-        $query = 'INSERT INTO ' . self::TABLE_METADATA . ' ( '. implode(', ', array_keys( $insertData ) ) . ' ) ' .
+        $query = 'INSERT INTO ' . $this->dbTable( $filePath ) . ' ( '. implode(', ', array_keys( $insertData ) ) . ' ) ' .
                  "VALUES(" . implode( ', ', $insertData ) . ")";
 
         try {
@@ -1418,7 +1483,7 @@ class eZDFSFileHandlerPostgresqlBackend
             else
             {
                 // generation timout check
-                $query = "SELECT mtime FROM " . self::TABLE_METADATA . " WHERE name_hash = {$nameHash}";
+                $query = "SELECT mtime FROM " . $this->dbTable( $filePath ) . " WHERE name_hash = {$nameHash}";
                 $row = $this->_selectOneRow( $query, $fname, false, false );
 
                 // file has been renamed, i.e it is no longer a .generating file
@@ -1431,7 +1496,7 @@ class eZDFSFileHandlerPostgresqlBackend
                     $previousMTime = $row[0];
 
                     eZDebugSetting::writeDebug( 'kernel-clustering', "$filePath generation has timedout, taking over", __METHOD__ );
-                    $updateQuery = "UPDATE " . self::TABLE_METADATA . " SET mtime = {$mtime} WHERE name_hash = {$nameHash} AND mtime = {$previousMTime}";
+                    $updateQuery = "UPDATE " . $this->dbTable( $filePath ) . " SET mtime = {$mtime} WHERE name_hash = {$nameHash} AND mtime = {$previousMTime}";
 
                     // we run the query manually since the default _query won't
                     // report affected rows
@@ -1470,7 +1535,7 @@ class eZDFSFileHandlerPostgresqlBackend
         // no rename: the .generating entry is just deleted
         if ( $rename === false )
         {
-            $this->_query( "DELETE FROM " . self::TABLE_METADATA . " WHERE name_hash=MD5('$generatingFilePath')", $fname, true );
+            $this->_query( "DELETE FROM " . $this->dbTable( $filePath ) . " WHERE name_hash=MD5('$generatingFilePath')", $fname, true );
             $this->dfsbackend->delete( $generatingFilePath );
             return true;
         }
@@ -1481,7 +1546,7 @@ class eZDFSFileHandlerPostgresqlBackend
             $this->_begin( $fname );
 
             // both files are locked for update
-            if ( !$stmt = $this->_query( "SELECT * FROM " . self::TABLE_METADATA . " WHERE name_hash=MD5('$generatingFilePath') FOR UPDATE", $fname, true ) )
+            if ( !$stmt = $this->_query( "SELECT * FROM " . $this->dbTable( $filePath ) . " WHERE name_hash=MD5('$generatingFilePath') FOR UPDATE", $fname, true ) )
             {
                 $this->_rollback( $fname );
                 throw new RuntimeException( "An error occcured getting a lock on $generatingFilePath" );
@@ -1489,14 +1554,14 @@ class eZDFSFileHandlerPostgresqlBackend
             $generatingMetaData = $stmt->fetch( PDO::FETCH_ASSOC );
 
             // the original file does not exist: we move the generating file
-            $stmt = $this->_query( "SELECT * FROM " . self::TABLE_METADATA . " WHERE name_hash=MD5('$filePath') FOR UPDATE", $fname, false );
+            $stmt = $this->_query( "SELECT * FROM " . $this->dbTable( $filePath ) . " WHERE name_hash=MD5('$filePath') FOR UPDATE", $fname, false );
             if ( $stmt->rowCount() == 0 )
             {
                 $metaData = $generatingMetaData;
                 $metaData['name'] = $filePath;
                 $metaData['name_hash'] = md5( $filePath );
                 $metaData['name_trunk'] = $this->nameTrunk( $filePath, $metaData['scope'] );
-                $insertSQL = "INSERT INTO " . self::TABLE_METADATA . " ( " . implode( ', ', array_keys( $metaData ) ) . " ) " .
+                $insertSQL = "INSERT INTO " . $this->dbTable( $filePath ) . " ( " . implode( ', ', array_keys( $metaData ) ) . " ) " .
                              "VALUES( " . $this->_sqlList( $metaData ) . ")";
                 if ( !$this->_query( $insertSQL, $fname, true ) )
                 {
@@ -1510,7 +1575,7 @@ class eZDFSFileHandlerPostgresqlBackend
                     $this->_rollback( $fname );
                     throw new RuntimeException("An error occured renaming DFS://$generatingFilePath to DFS://$filePath" );
                 }
-                $this->_query( "DELETE FROM " . self::TABLE_METADATA . " WHERE name_hash=MD5('$generatingFilePath')", $fname, true );
+                $this->_query( "DELETE FROM " . $this->dbTable( $filePath ) . " WHERE name_hash=MD5('$generatingFilePath')", $fname, true );
             }
             // the original file exists: we move the generating data to this file
             // and update it
@@ -1524,12 +1589,12 @@ class eZDFSFileHandlerPostgresqlBackend
 
                 $mtime = $generatingMetaData['mtime'];
                 $filesize = $generatingMetaData['size'];
-                if ( !$this->_query( "UPDATE " . self::TABLE_METADATA . " SET mtime = '{$mtime}', expired = 0, size = '{$filesize}' WHERE name_hash=MD5('$filePath')", $fname, true ) )
+                if ( !$this->_query( "UPDATE " . $this->dbTable( $filePath ) . " SET mtime = '{$mtime}', expired = 0, size = '{$filesize}' WHERE name_hash=MD5('$filePath')", $fname, true ) )
                 {
                     $this->_rollback( $fname );
                     throw new RuntimeException( "An error marking '$filePath' as not expired in the database" );
                 }
-                $this->_query( "DELETE FROM " . self::TABLE_METADATA . " WHERE name_hash=MD5('$generatingFilePath')", $fname, true );
+                $this->_query( "DELETE FROM " . $this->dbTable( $filePath ) . " WHERE name_hash=MD5('$generatingFilePath')", $fname, true );
             }
 
             $this->_commit( $fname );
@@ -1559,7 +1624,7 @@ class eZDFSFileHandlerPostgresqlBackend
         $newMtime = time();
 
         // The update query will only succeed if the mtime wasn't changed in between
-        $query = "UPDATE " . self::TABLE_METADATA . " SET mtime = $newMtime WHERE name_hash = {$nameHash} AND mtime = $generatingFileMtime";
+        $query = "UPDATE " . $this->dbTable( $generatingFilePath ) . " SET mtime = $newMtime WHERE name_hash = {$nameHash} AND mtime = $generatingFileMtime";
         $stmt = $this->db->query( $query );
         if ( !$stmt )
         {
@@ -1579,7 +1644,7 @@ class eZDFSFileHandlerPostgresqlBackend
         // returns 0, and updates nothing, we need to extra check this,
         if( $numRows == 0 )
         {
-            $query = "SELECT mtime FROM " . self::TABLE_METADATA . " WHERE name_hash = {$nameHash}";
+            $query = "SELECT mtime FROM " . $this->dbTable( $generatingFilePath ) . " WHERE name_hash = {$nameHash}";
             $stmt = $this->db->query( $query );
             $row = $stmt->fetch( PDO::FETCH_NUM );
             if ( isset( $row[0] ) and $row[0] == $generatingFileMtime );
@@ -1614,7 +1679,7 @@ class eZDFSFileHandlerPostgresqlBackend
 
         $this->_begin( $fname );
 
-        $sql = "DELETE FROM " . self::TABLE_METADATA . " WHERE name_hash = " . $this->_md5( $generatingFilePath );
+        $sql = "DELETE FROM " . $this->dbTable( $generatingFilePath ) . " WHERE name_hash = " . $this->_md5( $generatingFilePath );
         $this->_query( $sql, "_abortCacheGeneration( '$generatingFilePath' )" );
         $this->dfsbackend->delete( $generatingFilePath );
 
@@ -1688,40 +1753,83 @@ class eZDFSFileHandlerPostgresqlBackend
      */
     public function expiredFilesList( $scopes, $limit = array( 0, 100 ) )
     {
+        $tables = array( $this->metaDataTable, $this->metaDataTableCache );
+        
         if ( count( $scopes ) == 0 )
             throw new ezcBaseValueException( 'scopes', $scopes, "array of scopes", "parameter" );
 
         $scopeString = $this->_sqlList( $scopes );
-        $query = "SELECT name FROM " . self::TABLE_METADATA . " WHERE expired = 1 AND scope IN( $scopeString )";
-        if ( $limit !== false )
-        {
-            $query .= " LIMIT {$limit[1]} OFFSET {$limit[0]}";
-        }
-        $stmt = $this->_query( $query, __METHOD__ );
+        
         $filePathList = array();
-        while ( $row = $stmt->fetch( PDO::FETCH_NUM ) )
-            $filePathList[] = $row[0];
+        
+        foreach ( $tables as $table)
+        {
+            $query = "SELECT name FROM " . $table . " WHERE expired = 1 AND scope IN( $scopeString )";
+            if ( $limit !== false )
+            {
+                $query .= " LIMIT {$limit[1]} OFFSET {$limit[0]}";
+            }
+            $stmt = $this->_query( $query, __METHOD__ );
+            $filePathList = array();
+            while ( $row = $stmt->fetch( PDO::FETCH_NUM ) )
+                $filePathList[] = $row[0];
+            unset( $stmt );
+        }
 
         return $filePathList;
     }
+    
+    public function applyServerUri( $filePath )
+    {
+        return $this->dfsbackend->applyServerUri( $filePath );
+    }
+    
+    /**
+     * Deletes a batch of cache files from the storage table.
+     *
+     * @param int $limit
+     *
+     * @return int The number of moved rows
+     *
+     * @throws RuntimeException if a MySQL query occurs
+     * @throws InvalidArgumentException if the split table feature is disabled
+     */
+    public function deleteCacheFiles( $limit )
+    {
+        if ( $this->metaDataTable === $this->metaDataTableCache )
+        {
+            throw new InvalidArgumentException( "The split table features is disabled: cache and storage table are identical" );
+        }
+
+        $like = addcslashes( eZSys::cacheDirectory(), '_' ) . DIRECTORY_SEPARATOR . '%';
+
+        $query = "DELETE FROM {$this->metaDataTable} WHERE name LIKE '$like' LIMIT $limit";
+        if ( !$stmt = $this->_query( $sql ) )
+        {
+            throw new RuntimeException( "Error in $query" );
+        }
+
+        return $stmt->rowCount();
+    }
+
 
 
     /**
-     * DB connection handle
-     * @var PDO
-     **/
+     * DB connexion handle
+     * @var handle
+     */
     public $db = null;
 
     /**
      * DB connexion parameters
      * @var array
-     **/
+     */
     protected static $dbparams = null;
 
     /**
      * Amount of executed queries, for debugging purpose
      * @var int
-     **/
+     */
     protected $numQueries = 0;
 
     /**
@@ -1729,20 +1837,47 @@ class eZDFSFileHandlerPostgresqlBackend
      * Will be used to decide wether we can BEGIN (if it's the first BEGIN call)
      * or COMMIT (if we're commiting the last running transaction
      * @var int
-     **/
+     */
     protected $transactionCount = 0;
 
     /**
-     * DB file table name
-     * @var string
-     **/
-    const TABLE_METADATA = 'ezdfsfile';
+     * Distributed filesystem backend
+     * @var eZDFSFileHandlerDFSBackendInterface
+     */
+    protected $dfsbackend = null;
 
     /**
-     * Distributed filesystem backend
-     * @var eZDFSFileHandlerDFSBackend
-     **/
-    protected $dfsbackend = null;
+     * Event handler
+     * @var ezpEvent
+     */
+    protected $eventHandler;
+
+    /**
+     * custom dfs table name support
+     * @var string
+     */
+    protected $metaDataTable = 'ezdfsfile';
+
+    /**
+     * Custom DFS table for cache storage.
+     * Defaults to the "normal" storage table, meaning that only one table is used.
+     * @var string
+     */
+    protected $metaDataTableCache = 'ezdfsfile_cache';
+
+    /**
+     * Cache files directory, including leading & trailing slashes.
+     * Will be filled in using FileSettings.CacheDir from site.ini
+     * @var string
+     */
+    protected $cacheDir;
+
+    /**
+     * Storage directory, including leading & trailing slashes.
+     * Will be filled in using FileSettings.StorageDir from site.ini
+     * @var string
+     */
+    protected $storageDir;
 
     /**
      * Unique constraint violation error, used for stale cache management
@@ -1750,5 +1885,3 @@ class eZDFSFileHandlerPostgresqlBackend
      */
     const ERROR_UNIQUE_VIOLATION = 23505;
 }
-
-?>
