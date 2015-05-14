@@ -626,41 +626,64 @@ class eZDFSFileHandlerPostgresqlBackend
             return false;
         }
 
-        // create temporary file
-        if ( strrpos( $filePath, '.' ) > 0 )
-            $tmpFilePath = substr_replace( $filePath, getmypid().'tmp', strrpos( $filePath, '.' ), 0  );
-        else
-            $tmpFilePath = $filePath . '.' . getmypid().'tmp';
-        $this->__mkdir_p( dirname( $tmpFilePath ) );
+        $dfsFileSize = $this->dfsbackend->getDfsFileSize( $filePath );
+        $loopCount = 0;
+        $localFileSize = 0;
 
-        // copy DFS file to temporary FS path
-        // @todo Throw an exception
-        if ( !$this->dfsbackend->copyFromDFS( $filePath, $tmpFilePath ) )
+        do
         {
-            eZDebug::writeError("Failed copying DFS://$filePath to FS://$tmpFilePath ");
-            return false;
-        }
+            // create temporary file
+            $tmpid = getmypid() . '-' . mt_rand() .'tmp';
+            if ( strrpos( $filePath, '.' ) > 0 )
+                $tmpFilePath = substr_replace( $filePath, $tmpid, strrpos( $filePath, '.' ), 0  );
+            else
+                $tmpFilePath = $filePath . '.' . $tmpid;
+            $this->__mkdir_p( dirname( $tmpFilePath ) );
+            eZDebugSetting::writeDebug( 'kernel-clustering', "copying DFS://$filePath to FS://$tmpFilePath on try: $loopCount " );
 
-        // Make sure all data is written correctly
-        clearstatcache();
-        $tmpSize = filesize( $tmpFilePath );
-        // @todo Throw an exception
-        if ( $tmpSize != $metaData['size'] )
-        {
-            eZDebug::writeError( "Size ($tmpSize) of written data for file '$tmpFilePath' does not match expected size " . $metaData['size'], __METHOD__ );
-            return false;
-        }
+            // copy DFS file to temporary FS path
+            // @todo Throw an exception
+            if ( !$this->dfsbackend->copyFromDFS( $filePath, $tmpFilePath ) )
+            {
+                eZDebug::writeError("Failed copying DFS://$filePath to FS://$tmpFilePath ");
+                usleep( self::TIME_UNTIL_RETRY );
+                ++$loopCount;
+                continue;
+            }
 
-        if ( $uniqueName !== true )
-        {
-            eZFile::rename( $tmpFilePath, $filePath );
-        }
-        else
-        {
-            $filePath = $tmpFilePath;
-        }
+            if ( $uniqueName !== true )
+            {
+                if( !eZFile::rename( $tmpFilePath, $filePath, false, eZFile::CLEAN_ON_FAILURE | eZFile::APPEND_DEBUG_ON_FAILURE ) )
+                {
+                    usleep( self::TIME_UNTIL_RETRY );
+                    ++$loopCount;
+                    continue;
+                }
+            }
+            $filePath = ($uniqueName) ? $tmpFilePath : $filePath ;
 
-        return $filePath;
+            // If all data has been written correctly, return the filepath.
+            // Otherwise let the loop continue
+            clearstatcache( true, $filePath );
+            $localFileSize = filesize( $filePath );
+            if ( $dfsFileSize == $localFileSize )
+            {
+                return $filePath;
+            }
+            // Sizes might have been corrupted by FS problems. Enforcing temp file removal.
+            else if ( file_exists( $tmpFilePath ) )
+            {
+                unlink( $tmpFilePath );
+            }
+
+            usleep( self::TIME_UNTIL_RETRY );
+            ++$loopCount;
+        }
+        while ( $dfsFileSize > $localFileSize && $loopCount < $this->maxCopyTries );
+
+        // Copy from DFS has failed :-(
+        eZDebug::writeError( "Size ({$localFileSize}) of written data for file '{$filePath}' does not match expected size {$metaData['size']}", __METHOD__ );
+        return false;
     }
 
     public function _fetchContents( $filePath, $fname = false )
